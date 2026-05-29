@@ -2,7 +2,7 @@
 #include <Lampada.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include "time.h"
+#include <ezTime.h>
 
 #include "WiFiManager.h"
 #include "MqttManager.h"
@@ -33,13 +33,10 @@ Lampada interruptor4(pinoInterruptor4);
 const char TOPICO_COMANDO[] = "senai134/esp32/comando";
 
 //==============================
-// NTP
+// EZTIME
 //==============================
 
-const char* servidorNTP = "pool.ntp.org";
-
-const long gmtOffset_sec = -3 * 3600;
-const int daylightOffset_sec = 0;
+Timezone tempoBrasil;
 
 //==============================
 // TIMER
@@ -55,7 +52,6 @@ bool timerAtivo = false;
 
 void tratarJsonLampada(const String& mensagem);
 void tratarMensagemRecebida(const char* topico, const String& mensagem);
-void configurarHorarioNTP();
 
 //==============================
 // SETUP
@@ -76,13 +72,38 @@ void setup()
 
     configurarDebug();
 
+    //==========================
+    // WIFI
+    //==========================
+
     conectarWiFi();
 
-    configurarHorarioNTP();
+    //==========================
+    // EZTIME
+    //==========================
+
+    waitForSync();
+
+    tempoBrasil.setLocation("America/Sao_Paulo");
+
+    debugInfo("======================");
+    debugInfo("Horario sincronizado");
+    debugInfo("======================");
+
+    debugInfo(
+        "Horario atual: " +
+        tempoBrasil.dateTime()
+    );
+
+    //==========================
+    // MQTT
+    //==========================
 
     configurarMQTT();
 
-    registrarCallbackMensagem(tratarMensagemRecebida);
+    registrarCallbackMensagem(
+        tratarMensagemRecebida
+    );
 
     conectarMQTT();
 }
@@ -99,24 +120,54 @@ void loop()
 
     loopMQTT();
 
+    events();
+
     interruptor1.update();
     interruptor2.update();
     interruptor3.update();
     interruptor4.update();
 
     //==========================
+    // HORARIO ATUAL
+    //==========================
+
+    int horaAtual =
+        tempoBrasil.hour();
+
+    int minutoAtual =
+        tempoBrasil.minute();
+
+    int segundoAtual =
+        tempoBrasil.second();
+
+    debugInfo(
+        "Horario atual: " +
+        String(horaAtual) + ":" +
+        String(minutoAtual) + ":" +
+        String(segundoAtual)
+    );
+
+    //==========================
     // TIMER
     //==========================
 
-    struct tm timeinfo;
-
-    if (timerAtivo && getLocalTime(&timeinfo))
+    if (timerAtivo)
     {
-        int horaAtual = timeinfo.tm_hour;
-        int minutoAtual = timeinfo.tm_min;
+        debugInfo("Timer ativo");
 
-        if (horaAtual == horaTimer &&
-            minutoAtual == minutoTimer)
+        debugInfo(
+            "Horario timer: " +
+            String(horaTimer) + ":" +
+            String(minutoTimer)
+        );
+
+        int horarioAtualMinutos =
+            (horaAtual * 60) + minutoAtual;
+
+        int horarioTimerMinutos =
+            (horaTimer * 60) + minutoTimer;
+
+        if (horarioAtualMinutos >= horarioTimerMinutos)
         {
             interruptor1.apagar();
 
@@ -124,51 +175,15 @@ void loop()
             debugInfo("TIMER EXECUTADO");
             debugInfo("======================");
 
-            debugInfo("Interruptor1 desligado");
+            debugInfo(
+                "Interruptor1 desligado"
+            );
 
             timerAtivo = false;
         }
     }
 
-    delay(100);
-}
-
-//==============================
-// NTP
-//==============================
-
-void configurarHorarioNTP()
-{
-    debugInfo("========================");
-    debugInfo("Configurando NTP");
-    debugInfo("========================");
-
-    configTime(
-        gmtOffset_sec,
-        daylightOffset_sec,
-        servidorNTP
-    );
-
-    struct tm timeinfo;
-
-    if (!getLocalTime(&timeinfo))
-    {
-        debugErro("Falha ao obter horario NTP");
-        return;
-    }
-
-    debugInfo("Horario sincronizado");
-
-    char horario[30];
-
-    strftime(
-        horario,
-        sizeof(horario),
-        "%H:%M:%S",
-        &timeinfo
-    );
-
-    debugInfo("Horario atual: " + String(horario));
+    delay(1000);
 }
 
 //==============================
@@ -180,7 +195,7 @@ void tratarMensagemRecebida(
     const String& mensagem)
 {
     debugInfo("==============================");
-    debugInfo("Mensagem recebida na aplicacao");
+    debugInfo("Mensagem recebida");
     debugInfo("==============================");
 
     if (topico == nullptr)
@@ -189,8 +204,15 @@ void tratarMensagemRecebida(
         return;
     }
 
-    debugInfo("Topico: " + String(topico));
-    debugInfo("Mensagem: " + mensagem);
+    debugInfo(
+        "Topico: " +
+        String(topico)
+    );
+
+    debugInfo(
+        "Mensagem: " +
+        mensagem
+    );
 
     if (strcmp(topico, TOPICO_COMANDO) == 0)
     {
@@ -205,7 +227,8 @@ void tratarMensagemRecebida(
 // JSON
 //==============================
 
-void tratarJsonLampada(const String& mensagem)
+void tratarJsonLampada(
+    const String& mensagem)
 {
     DynamicJsonDocument doc(1024);
 
@@ -222,7 +245,9 @@ void tratarJsonLampada(const String& mensagem)
         return;
     }
 
-    debugInfo("JSON deserializado com sucesso");
+    debugInfo(
+        "JSON deserializado com sucesso"
+    );
 
     //==========================
     // SALA 09
@@ -231,7 +256,8 @@ void tratarJsonLampada(const String& mensagem)
     if (doc["lampadaSala09"].is<JsonObject>())
     {
         JsonObject sala09 =
-            doc["lampadaSala09"].as<JsonObject>();
+            doc["lampadaSala09"]
+            .as<JsonObject>();
 
         bool estadoInterruptor1 =
             sala09["interruptor1"] | false;
@@ -243,26 +269,34 @@ void tratarJsonLampada(const String& mensagem)
         {
             interruptor1.acender();
 
-            debugInfo("interruptor1: LIGADO");
+            debugInfo(
+                "interruptor1: LIGADO"
+            );
         }
         else
         {
             interruptor1.apagar();
 
-            debugInfo("interruptor1: DESLIGADO");
+            debugInfo(
+                "interruptor1: DESLIGADO"
+            );
         }
 
         if (estadoInterruptor2)
         {
             interruptor2.acender();
 
-            debugInfo("interruptor2: LIGADO");
+            debugInfo(
+                "interruptor2: LIGADO"
+            );
         }
         else
         {
             interruptor2.apagar();
 
-            debugInfo("interruptor2: DESLIGADO");
+            debugInfo(
+                "interruptor2: DESLIGADO"
+            );
         }
     }
 
@@ -273,7 +307,8 @@ void tratarJsonLampada(const String& mensagem)
     if (doc["lampadaSala10"].is<JsonObject>())
     {
         JsonObject sala10 =
-            doc["lampadaSala10"].as<JsonObject>();
+            doc["lampadaSala10"]
+            .as<JsonObject>();
 
         bool estadoInterruptor3 =
             sala10["interruptor3"] | false;
@@ -285,26 +320,34 @@ void tratarJsonLampada(const String& mensagem)
         {
             interruptor3.acender();
 
-            debugInfo("interruptor3: LIGADO");
+            debugInfo(
+                "interruptor3: LIGADO"
+            );
         }
         else
         {
             interruptor3.apagar();
 
-            debugInfo("interruptor3: DESLIGADO");
+            debugInfo(
+                "interruptor3: DESLIGADO"
+            );
         }
 
         if (estadoInterruptor4)
         {
             interruptor4.acender();
 
-            debugInfo("interruptor4: LIGADO");
+            debugInfo(
+                "interruptor4: LIGADO"
+            );
         }
         else
         {
             interruptor4.apagar();
 
-            debugInfo("interruptor4: DESLIGADO");
+            debugInfo(
+                "interruptor4: DESLIGADO"
+            );
         }
     }
 
@@ -315,7 +358,8 @@ void tratarJsonLampada(const String& mensagem)
     if (doc["timer"].is<JsonObject>())
     {
         JsonObject timer =
-            doc["timer"].as<JsonObject>();
+            doc["timer"]
+            .as<JsonObject>();
 
         horaTimer =
             timer["hora"] | 0;
@@ -330,8 +374,19 @@ void tratarJsonLampada(const String& mensagem)
         debugInfo("TIMER RECEBIDO");
         debugInfo("======================");
 
-        debugInfo("Hora: " + String(horaTimer));
-        debugInfo("Minuto: " + String(minutoTimer));
-        debugInfo("Estado: " + String(timerAtivo));
+        debugInfo(
+            "Hora: " +
+            String(horaTimer)
+        );
+
+        debugInfo(
+            "Minuto: " +
+            String(minutoTimer)
+        );
+
+        debugInfo(
+            "Estado: " +
+            String(timerAtivo)
+        );
     }
 }
