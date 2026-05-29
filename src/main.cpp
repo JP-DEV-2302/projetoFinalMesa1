@@ -1,30 +1,72 @@
 #include <Arduino.h>
 #include <Lampada.h>
 #include <ArduinoJson.h>
+#include <WiFi.h>
+#include "time.h"
 
 #include "WiFiManager.h"
 #include "MqttManager.h"
 #include "DebugManager.h"
+
+//==============================
+// PINOS
+//==============================
 
 const int pinoInterruptor1 = 18;
 const int pinoInterruptor2 = 6;
 const int pinoInterruptor3 = 7;
 const int pinoInterruptor4 = 8;
 
+//==============================
+// OBJETOS
+//==============================
+
 Lampada interruptor1(pinoInterruptor1);
 Lampada interruptor2(pinoInterruptor2);
 Lampada interruptor3(pinoInterruptor3);
 Lampada interruptor4(pinoInterruptor4);
 
-void tratarJsonLampada(const String& mensagem);
-void tratarMensagemRecebida(const char* topico, const String& mensagem);
+//==============================
+// MQTT
+//==============================
 
 const char TOPICO_COMANDO[] = "senai134/esp32/comando";
+
+//==============================
+// NTP
+//==============================
+
+const char* servidorNTP = "pool.ntp.org";
+
+const long gmtOffset_sec = -3 * 3600;
+const int daylightOffset_sec = 0;
+
+//==============================
+// TIMER
+//==============================
+
+int horaTimer = 0;
+int minutoTimer = 0;
+bool timerAtivo = false;
+
+//==============================
+// FUNÇÕES
+//==============================
+
+void tratarJsonLampada(const String& mensagem);
+void tratarMensagemRecebida(const char* topico, const String& mensagem);
+void configurarHorarioNTP();
+
+//==============================
+// SETUP
+//==============================
 
 void setup()
 {
     Serial.begin(115200);
+
     delay(3000);
+
     Serial.println("Iniciando...");
 
     pinMode(pinoInterruptor1, OUTPUT);
@@ -33,25 +75,109 @@ void setup()
     pinMode(pinoInterruptor4, OUTPUT);
 
     configurarDebug();
+
     conectarWiFi();
+
+    configurarHorarioNTP();
+
     configurarMQTT();
+
     registrarCallbackMensagem(tratarMensagemRecebida);
+
     conectarMQTT();
 }
+
+//==============================
+// LOOP
+//==============================
 
 void loop()
 {
     garantirWiFiConectado();
+
     garantirMQTTConectado();
+
     loopMQTT();
 
     interruptor1.update();
     interruptor2.update();
     interruptor3.update();
     interruptor4.update();
+
+    //==========================
+    // TIMER
+    //==========================
+
+    struct tm timeinfo;
+
+    if (timerAtivo && getLocalTime(&timeinfo))
+    {
+        int horaAtual = timeinfo.tm_hour;
+        int minutoAtual = timeinfo.tm_min;
+
+        if (horaAtual == horaTimer &&
+            minutoAtual == minutoTimer)
+        {
+            interruptor1.apagar();
+
+            debugInfo("======================");
+            debugInfo("TIMER EXECUTADO");
+            debugInfo("======================");
+
+            debugInfo("Interruptor1 desligado");
+
+            timerAtivo = false;
+        }
+    }
+
+    delay(100);
 }
 
-void tratarMensagemRecebida(const char* topico, const String& mensagem)
+//==============================
+// NTP
+//==============================
+
+void configurarHorarioNTP()
+{
+    debugInfo("========================");
+    debugInfo("Configurando NTP");
+    debugInfo("========================");
+
+    configTime(
+        gmtOffset_sec,
+        daylightOffset_sec,
+        servidorNTP
+    );
+
+    struct tm timeinfo;
+
+    if (!getLocalTime(&timeinfo))
+    {
+        debugErro("Falha ao obter horario NTP");
+        return;
+    }
+
+    debugInfo("Horario sincronizado");
+
+    char horario[30];
+
+    strftime(
+        horario,
+        sizeof(horario),
+        "%H:%M:%S",
+        &timeinfo
+    );
+
+    debugInfo("Horario atual: " + String(horario));
+}
+
+//==============================
+// CALLBACK MQTT
+//==============================
+
+void tratarMensagemRecebida(
+    const char* topico,
+    const String& mensagem)
 {
     debugInfo("==============================");
     debugInfo("Mensagem recebida na aplicacao");
@@ -72,100 +198,140 @@ void tratarMensagemRecebida(const char* topico, const String& mensagem)
         return;
     }
 
-    debugErro("Topico nao tratado: " + String(topico));
+    debugErro("Topico nao tratado");
 }
+
+//==============================
+// JSON
+//==============================
 
 void tratarJsonLampada(const String& mensagem)
 {
-    // Passo 1 — Desserializa o JSON recebido
-    JsonDocument doc;
-    DeserializationError erro = deserializeJson(doc, mensagem);
+    DynamicJsonDocument doc(1024);
+
+    DeserializationError erro =
+        deserializeJson(doc, mensagem);
 
     if (erro)
     {
-        debugErro("Falha ao interpretar JSON: " + String(erro.c_str()));
-        debugErro("Payload recebido: " + mensagem);
+        debugErro(
+            "Falha JSON: " +
+            String(erro.c_str())
+        );
+
         return;
     }
 
-    debugInfo("JSON deserializado com sucesso.");
+    debugInfo("JSON deserializado com sucesso");
 
-    // Passo 2 — Extrai os valores dos interruptores das duas salas
-    bool estadoInterruptor1 = false;
-    bool estadoInterruptor2 = false;
-    bool estadoInterruptor3 = false;
-    bool estadoInterruptor4 = false;
+    //==========================
+    // SALA 09
+    //==========================
 
     if (doc["lampadaSala09"].is<JsonObject>())
     {
-        JsonObject sala09 = doc["lampadaSala09"].as<JsonObject>();
-        estadoInterruptor1 = sala09["interruptor1"].as<bool>();
-        estadoInterruptor2 = sala09["interruptor2"].as<bool>();
+        JsonObject sala09 =
+            doc["lampadaSala09"].as<JsonObject>();
+
+        bool estadoInterruptor1 =
+            sala09["interruptor1"] | false;
+
+        bool estadoInterruptor2 =
+            sala09["interruptor2"] | false;
+
+        if (estadoInterruptor1)
+        {
+            interruptor1.acender();
+
+            debugInfo("interruptor1: LIGADO");
+        }
+        else
+        {
+            interruptor1.apagar();
+
+            debugInfo("interruptor1: DESLIGADO");
+        }
+
+        if (estadoInterruptor2)
+        {
+            interruptor2.acender();
+
+            debugInfo("interruptor2: LIGADO");
+        }
+        else
+        {
+            interruptor2.apagar();
+
+            debugInfo("interruptor2: DESLIGADO");
+        }
     }
+
+    //==========================
+    // SALA 10
+    //==========================
 
     if (doc["lampadaSala10"].is<JsonObject>())
     {
-        JsonObject sala10 = doc["lampadaSala10"].as<JsonObject>();
-        estadoInterruptor3 = sala10["interruptor3"].as<bool>();
-        estadoInterruptor4 = sala10["interruptor4"].as<bool>();
+        JsonObject sala10 =
+            doc["lampadaSala10"].as<JsonObject>();
+
+        bool estadoInterruptor3 =
+            sala10["interruptor3"] | false;
+
+        bool estadoInterruptor4 =
+            sala10["interruptor4"] | false;
+
+        if (estadoInterruptor3)
+        {
+            interruptor3.acender();
+
+            debugInfo("interruptor3: LIGADO");
+        }
+        else
+        {
+            interruptor3.apagar();
+
+            debugInfo("interruptor3: DESLIGADO");
+        }
+
+        if (estadoInterruptor4)
+        {
+            interruptor4.acender();
+
+            debugInfo("interruptor4: LIGADO");
+        }
+        else
+        {
+            interruptor4.apagar();
+
+            debugInfo("interruptor4: DESLIGADO");
+        }
     }
 
-    // Passo 3 — Switch case para tratar cada interruptor
-    for (int i = 1; i <= 4; i++)
+    //==========================
+    // TIMER
+    //==========================
+
+    if (doc["timer"].is<JsonObject>())
     {
-        switch (i)
-        {
-            case 1:
-                if (estadoInterruptor1)
-                {
-                    interruptor1.acender();
-                    debugInfo("interruptor1: LIGADO");
-                }
-                else
-                {
-                    interruptor1.apagar();
-                    debugInfo("interruptor1: DESLIGADO");
-                }
-                break;
+        JsonObject timer =
+            doc["timer"].as<JsonObject>();
 
-            case 2:
-                if (estadoInterruptor2)
-                {
-                    interruptor2.acender();
-                    debugInfo("interruptor2: LIGADO");
-                }
-                else
-                {
-                    interruptor2.apagar();
-                    debugInfo("interruptor2: DESLIGADO");
-                }
-                break;
+        horaTimer =
+            timer["hora"] | 0;
 
-            case 3:
-                if (estadoInterruptor3)
-                {
-                    interruptor3.acender();
-                    debugInfo("interruptor3: LIGADO");
-                }
-                else
-                {
-                    interruptor3.apagar();
-                    debugInfo("interruptor3: DESLIGADO");
-                }
-                break;
+        minutoTimer =
+            timer["minuto"] | 0;
 
-            case 4:
-                if (estadoInterruptor4)
-                {
-                    interruptor4.acender();
-                    debugInfo("interruptor4: LIGADO");
-                }
-                else
-                {
-                    interruptor4.apagar();
-                    debugInfo("interruptor4: DESLIGADO");
-                }
-                break;
-        }
+        timerAtivo =
+            timer["estado"] | false;
+
+        debugInfo("======================");
+        debugInfo("TIMER RECEBIDO");
+        debugInfo("======================");
+
+        debugInfo("Hora: " + String(horaTimer));
+        debugInfo("Minuto: " + String(minutoTimer));
+        debugInfo("Estado: " + String(timerAtivo));
     }
 }
