@@ -53,7 +53,7 @@ void conectarWiFi()
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_SENHA);
 
-    int tentativas        = 0;
+    int tentativas = 0;
     const int maxTentativas = 30; // 30 × 500ms = 15 segundos de espera máxima
 
     // Passo 3 — Aguarda a conexão com feedback visual no serial
@@ -78,7 +78,7 @@ void conectarWiFi()
         // Passo 5 — Falha: loga com código de status para diagnóstico
         debugErro("Falha ao conectar ao Wi-Fi apos " + String(tentativas) + " tentativas.");
         debugErro("Status WiFi: " + String(WiFi.status()) +
-            " (1=sem SSID, 3=conectado, 4=falha, 6=desconectado)");
+                  " (1=sem SSID, 3=conectado, 4=falha, 6=desconectado)");
         debugErro("Verifique SSID e senha em secrets.cpp.");
     }
 }
