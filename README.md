@@ -85,5 +85,4 @@ Projeto acadêmico e de arquitetura de software elaborado no formato corporativo
 * **Eric Tsuruta**
 * **João Pedro Maximiniano de Oliveira**
 * **Manuella Huertas Bettini**
-* **Marcos de Paula Moser**
 * **Neyton Duarte dos Santos**
