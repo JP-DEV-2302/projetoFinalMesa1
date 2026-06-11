@@ -5,7 +5,7 @@
 #include <ArduinoOTA.h>
 #include <Update.h>
 #include <AtualizadorOTA.h>
-#include <esp_ota_ops.h> // ✅ ADICIONADO — necessário para marcar firmware como válido
+#include <esp_ota_ops.h>
 #include "time.h"
 
 #include "WiFiManager.h"
@@ -92,18 +92,13 @@ String obterTimestamp()
 
     if (!getLocalTime(&timeinfo))
     {
-        return "";
+        return "0";
     }
 
-    char buffer[25];
+    time_t agora;
+    time(&agora);
 
-    strftime(
-        buffer,
-        sizeof(buffer),
-        "%Y-%m-%dT%H:%M:%S",
-        &timeinfo);
-
-    return String(buffer);
+    return String((unsigned long)agora);
 }
 
 //==============================
@@ -129,48 +124,54 @@ void setup()
     configurarDebug();
     conectarWiFi();
 
+#if SALA == 9
+    ArduinoOTA.setHostname("lampadaSala09");
+#else
     ArduinoOTA.setHostname("lampadaSala10");
+#endif
 
-    // ✅ ADICIONADO — callback de início com tipo de update
+    ArduinoOTA.setPassword("info@134");
+
     ArduinoOTA.onStart([]()
-                       {
+    {
         String tipo = (ArduinoOTA.getCommand() == U_FLASH)
             ? "firmware"
             : "filesystem";
-        Serial.println("Iniciando OTA — tipo: " + tipo); });
+        Serial.println("Iniciando OTA — tipo: " + tipo);
+    });
 
-    // ✅ ADICIONADO — callback de conclusão
     ArduinoOTA.onEnd([]()
-                     { Serial.println("\nOTA concluido. Reiniciando..."); });
+    {
+        Serial.println("\nOTA concluido. Reiniciando...");
+    });
 
-    // ✅ ADICIONADO — callback de progresso
     ArduinoOTA.onProgress([](unsigned int progresso, unsigned int total)
-                          { Serial.printf("Progresso OTA: %u%%\r", (progresso * 100) / total); });
+    {
+        Serial.printf("Progresso OTA: %u%%\r", (progresso * 100) / total);
+    });
 
-    // ✅ ADICIONADO — callback de erro com descrição
     ArduinoOTA.onError([](ota_error_t erro)
-                       {
+    {
         Serial.printf("Erro OTA [%u]: ", erro);
 
         if      (erro == OTA_AUTH_ERROR)    Serial.println("Falha de autenticacao");
         else if (erro == OTA_BEGIN_ERROR)   Serial.println("Falha ao iniciar");
         else if (erro == OTA_CONNECT_ERROR) Serial.println("Falha de conexao");
         else if (erro == OTA_RECEIVE_ERROR) Serial.println("Falha ao receber");
-        else if (erro == OTA_END_ERROR)     Serial.println("Falha ao finalizar"); });
+        else if (erro == OTA_END_ERROR)     Serial.println("Falha ao finalizar");
+    });
 
     ArduinoOTA.begin();
     Serial.println("OTA pronto. IP: " + WiFi.localIP().toString());
+
+    esp_ota_mark_app_valid_cancel_rollback();
+    Serial.println("Bootloader: firmware marcado como valido");
 
     configurarHorarioNTP();
 
     configurarMQTT();
     registrarCallbackMensagem(tratarMensagemRecebida);
     conectarMQTT();
-
-    // ✅ ADICIONADO — informa ao bootloader que o firmware subiu corretamente
-    // Sem isso, o ESP32 faz rollback para o firmware anterior após reiniciar
-    esp_ota_mark_app_valid_cancel_rollback();
-    Serial.println("Bootloader: firmware marcado como valido");
 }
 
 //==============================
@@ -211,7 +212,7 @@ void loop()
         debugInfo("JSON ENVIADO:");
         debugInfo(mensagem);
 
-        delay(250);
+        // delay(250);
     }
 
     estadoBotaoAnterior4 = estadoBotaoAtual4;
@@ -242,7 +243,7 @@ void loop()
         debugInfo("JSON ENVIADO:");
         debugInfo(mensagem);
 
-        delay(250);
+        // delay(250);
     }
 
     estadoBotaoAnterior3 = estadoBotaoAtual3;
@@ -273,7 +274,7 @@ void loop()
         debugInfo("JSON ENVIADO:");
         debugInfo(mensagem);
 
-        delay(250);
+        // delay(250);
     }
 
     estadoBotaoAnterior2 = estadoBotaoAtual2;
@@ -304,7 +305,7 @@ void loop()
         debugInfo("JSON ENVIADO:");
         debugInfo(mensagem);
 
-        delay(250);
+        // delay(250);
     }
 
     estadoBotaoAnterior = estadoBotaoAtual;
@@ -468,6 +469,13 @@ void tratarJsonLampada(const String &mensagem)
         return;
     }
 
+    // ✅ IGNORAR mensagens enviadas pelo próprio ESP32
+    if (doc["origem"] == "esp32")
+    {
+        debugInfo("Mensagem propria ignorada");
+        return;
+    }
+
     debugInfo("JSON deserializado com sucesso");
 
     //==========================
@@ -559,7 +567,7 @@ void tratarJsonLampada(const String &mensagem)
         {
             bool estadoInterruptor4 = sala10["interruptor4"].as<int>() == 1;
 
-            estadoLampadaBotao4 = estadoInterruptor4; // ✅ CORRIGIDO — era estadoLampadaBotao2
+            estadoLampadaBotao4 = estadoInterruptor4;
 
             estadoInterruptor4
                 ? interruptor4.acender()
@@ -587,4 +595,30 @@ void tratarJsonLampada(const String &mensagem)
             debugInfo("Estado: " + String(timerAtivo));
         }
     }
+
+    //==========================
+    // MENSAGEM DE RETORNO
+    //==========================
+
+    JsonDocument docRetorno;
+    docRetorno["timestamp"] = obterTimestamp();
+    docRetorno["origem"] = "esp32";
+
+#if SALA == 9
+    docRetorno["lampadaSala09"]["interruptor1"] = estadoLampadaBotao  ? 1 : 0;
+    docRetorno["lampadaSala09"]["interruptor2"] = estadoLampadaBotao2 ? 1 : 0;
+#else
+    docRetorno["lampadaSala10"]["interruptor3"] = estadoLampadaBotao3 ? 1 : 0;
+    docRetorno["lampadaSala10"]["interruptor4"] = estadoLampadaBotao4 ? 1 : 0;
+#endif
+
+    String mensagemRetorno;
+    serializeJson(docRetorno, mensagemRetorno);
+
+    publicarMensagem(TOPICO_COMANDO, mensagemRetorno.c_str());
+
+    debugInfo("======================");
+    debugInfo("RETORNO ENVIADO");
+    debugInfo("======================");
+    debugInfo(mensagemRetorno);
 }
